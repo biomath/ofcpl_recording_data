@@ -1,0 +1,607 @@
+import numpy as np
+import pandas as pd
+from copy import deepcopy
+import copy
+
+
+def auROC_response_curve(hist, edges, pre_stimulus_baseline_start, pre_stimulus_baseline_end, auroc_binsize=0.1):
+    """
+    Receiver Operating Characteristic curve (auROC) calculation
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+    :param hist: numpy.ndarray
+        A histogram resulting from numpy.hist
+    :param edges: numpy.ndarray
+        Histogram edges resulting from numpy.hist
+    :param pre_stimulus_baseline_start:  number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+    :return: auroc_curve: numpy.ndarray
+        The auROC curve
+    """
+
+    # Grab baseline period histogram
+    baseline_points_mask = (edges >= -pre_stimulus_baseline_start) & (edges < -pre_stimulus_baseline_end)
+    baseline_hist = hist[baseline_points_mask[:-1]]
+
+    # For every bin during response
+    auroc_curve = np.array([])
+    for start_bin in np.arange(edges[0], edges[-1], auroc_binsize):
+        cur_points_mask = (edges >= start_bin) & (edges < start_bin + auroc_binsize)
+        cur_hist_values = hist[cur_points_mask[:-1]]
+
+        max_criterion = np.max(np.concatenate((baseline_hist, cur_hist_values), axis=None))
+        if max_criterion > 0:
+            thresholds = np.linspace(0, max_criterion, int(max_criterion / 0.1), endpoint=True)
+        else:
+            thresholds = [0, 1]  # Fix for when there's zero spikes to still get auROC=0.5
+
+        false_positive = []
+        true_positive = []
+        for t in thresholds:
+            response_above_t = cur_hist_values >= t
+            baseline_above_t = baseline_hist >= t
+
+            false_positive.append(sum(baseline_above_t) / len(baseline_hist))
+            true_positive.append(sum(response_above_t) / len(cur_hist_values))
+        auroc_curve = np.append(auroc_curve, np.trapz(sorted(true_positive), sorted(false_positive)))
+        # # For debugging
+        # mpl.use('TkAgg')
+        # plt.figure()
+        # plt.plot(false_positive, true_positive)
+        # plt.show()
+
+    return auroc_curve
+
+
+def calculate_auROC_spoutOffHit(cur_unitData,
+                                session_name,
+                                pre_stimulus_baseline_start,
+                                pre_stimulus_baseline_end,
+                                pre_stimulus_raster,
+                                post_stimulus_raster,
+                                psth_binsize=0.01,
+                                auroc_binsize=0.1
+                                ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to a spout-off event that triggered a Hit;
+        skip if no hits are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'Hit', 'SpoutOff_times_during_trial']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around hits
+    trial_spikes = cur_df[cur_df['Hit'] == 1]['Trial_spikes']
+
+    # If no hits, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = []
+        cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = []
+        return cur_unitData
+
+    # Find spout offset that triggered Hit
+    spoutOffset_triggers = cur_df[cur_df['Hit'] == 1]['SpoutOff_times_during_trial'].values
+    spoutOffset_triggers = [np.array(t) for t in spoutOffset_triggers]
+
+    # If no triggers, skip
+    if len(spoutOffset_triggers[0]) == 0:
+        cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = []
+        cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = []
+        return cur_unitData
+
+    spoutOffset_triggers = [cur_trial[(cur_trial > 0) & (cur_trial < 1)][-1] for cur_trial in spoutOffset_triggers]
+
+
+    # Zero-center spikes around those events
+    zero_centered_spikes = deepcopy(np.array(trial_spikes.values))
+    for trial_idx, spoutOffset_trigger in enumerate(spoutOffset_triggers):
+        zero_centered_spikes[trial_idx] -= spoutOffset_trigger
+
+    # Flatten all trials into a 1D array
+    # zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+    zero_centered_spikes = np.concatenate(zero_centered_spikes.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(spoutOffset_triggers)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = hist
+    cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = auroc_curve
+
+    return cur_unitData
+
+def calculate_auROC_hit(cur_unitData,
+                                session_name,
+                                pre_stimulus_baseline_start,
+                                pre_stimulus_baseline_end,
+                                pre_stimulus_raster,
+                                post_stimulus_raster,
+                                psth_binsize=0.01,
+                                auroc_binsize=0.1
+                                ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to a Hit trial;
+        skip if no hits are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'Hit']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    trial_spikes = cur_df[cur_df['Hit'] == 1]['Trial_spikes']
+
+    # If no Misses, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name]['Hit_psth'] = []
+        cur_unitData["Session"][session_name]['Hit_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name]['Hit_psth'] = hist
+    cur_unitData["Session"][session_name]['Hit_auroc'] = auroc_curve
+
+    return cur_unitData
+
+def calculate_auROC_miss(cur_unitData,
+                                session_name,
+                                pre_stimulus_baseline_start,
+                                pre_stimulus_baseline_end,
+                                pre_stimulus_raster,
+                                post_stimulus_raster,
+                                psth_binsize=0.01,
+                                auroc_binsize=0.1
+                                ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to a spout-off event that triggered a Hit;
+        skip if no hits are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'Miss']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    trial_spikes = cur_df[cur_df['Miss'] == 1]['Trial_spikes']
+
+    # If no Misses, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name]['Miss_psth'] = []
+        cur_unitData["Session"][session_name]['Miss_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name]['Miss_psth'] = hist
+    cur_unitData["Session"][session_name]['Miss_auroc'] = auroc_curve
+
+    return cur_unitData
+
+def calculate_auROC_FA(cur_unitData,
+                                session_name,
+                                pre_stimulus_baseline_start,
+                                pre_stimulus_baseline_end,
+                                pre_stimulus_raster,
+                                post_stimulus_raster,
+                                psth_binsize=0.01,
+                                auroc_binsize=0.1
+                                ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to a False Alarm;
+        skip if no hits are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'FA']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    trial_spikes = cur_df[cur_df['FA'] == 1]['Trial_spikes']
+
+    # If no Misses, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name]['FA_psth'] = []
+        cur_unitData["Session"][session_name]['FA_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name]['FA_psth'] = hist
+    cur_unitData["Session"][session_name]['FA_auroc'] = auroc_curve
+
+    return cur_unitData
+
+
+def calculate_auROC_AMTrial(cur_unitData,
+                                session_name,
+                                pre_stimulus_baseline_start,
+                                pre_stimulus_baseline_end,
+                                pre_stimulus_raster,
+                                post_stimulus_raster,
+                                psth_binsize=0.01,
+                                auroc_binsize=0.1
+                                ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to AM trials;
+        skip if none are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    output_name = 'AMTrial'
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to all AM trial
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'Hit', 'Miss']
+    copy_relevant_unitData = {x: cur_unitData["Session"][session_name][x] for x in key_filter}
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC AMTrial failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+    # Grab spikes around misses
+    trial_spikes = cur_df[(cur_df['Hit'] == 1) | cur_df['Miss'] == 1]['Trial_spikes']
+
+    # If no spikes, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name][output_name + '_psth'] = []
+        cur_unitData["Session"][session_name][output_name + '_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name][output_name + '_psth'] = hist
+    cur_unitData["Session"][session_name][output_name + '_auroc'] = auroc_curve
+
+    return cur_unitData
+
+
+def calculate_auROC_allSpoutOnset(cur_unitData,
+                            session_name,
+                            pre_stimulus_baseline_start,
+                            pre_stimulus_baseline_end,
+                            pre_stimulus_raster,
+                            post_stimulus_raster,
+                            psth_binsize=0.01,
+                            auroc_binsize=0.1
+                            ):
+    """
+
+    """
+
+    output_name = 'allSpoutOnset'
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to all AM trial
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Onset_rasters']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    trial_spikes = cur_df['Onset_rasters']
+
+    # If no spikes, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name][output_name + '_psth'] = []
+        cur_unitData["Session"][session_name][output_name + '_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name][output_name + '_psth'] = hist
+    cur_unitData["Session"][session_name][output_name + '_auroc'] = auroc_curve
+
+    return cur_unitData
+
+
+def calculate_auROC_allSpoutOffset(cur_unitData,
+                                  session_name,
+                                  pre_stimulus_baseline_start,
+                                  pre_stimulus_baseline_end,
+                                  pre_stimulus_raster,
+                                  post_stimulus_raster,
+                                  psth_binsize=0.01,
+                                  auroc_binsize=0.1
+                                  ):
+    """
+
+    """
+
+    output_name = 'allSpoutOffset'
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to all AM trial
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Offset_rasters']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    trial_spikes = cur_df['Offset_rasters']
+
+    # If no spikes, skip
+    if len(trial_spikes) == 0:
+        cur_unitData["Session"][session_name][output_name + '_psth'] = []
+        cur_unitData["Session"][session_name][output_name + '_auroc'] = []
+        return cur_unitData
+
+    # Flatten all trials into a 1D array
+    zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+    # Generate a PSTH
+    hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+    # Convert to Hz/trial
+    hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+    # Calculate auROC
+    auroc_curve = auROC_response_curve(hist, edges,
+                                       pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                       auroc_binsize=auroc_binsize)
+
+    cur_unitData["Session"][session_name][output_name + '_psth'] = hist
+    cur_unitData["Session"][session_name][output_name + '_auroc'] = auroc_curve
+
+    return cur_unitData
