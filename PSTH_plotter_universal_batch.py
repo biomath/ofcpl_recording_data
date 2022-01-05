@@ -48,6 +48,7 @@ def gaussian_smoothing(hist, edges, pre_stimulus_baseline, window):
     return ret_psth
 
 
+
 def common_psth_engine(spike_times,
                        key_times,
                        pre_stimulus_raster, post_stimulus_raster,
@@ -55,14 +56,16 @@ def common_psth_engine(spike_times,
                        ax_raster=None, ax_psth=None, ax_gaussian=None,
                        breakpoint_offset=None,
                        hist_bin_size_ms=10,
-                       do_plot=True):
+                       do_plot=True,
+                       rasterize=True):
     number_of_stimulus_repetitions = len(key_times)
 
     bin_size = hist_bin_size_ms / 1000  # in s
-    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, bin_size)
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster+bin_size, bin_size)
 
     # Loop through each stimulus presentation
     raster_trial_counter = number_of_stimulus_repetitions
+    # raster_trial_counter = 0
     relative_times = list()
     for cur_stim_time in key_times:
         # offset_stim_time = cur_stim_time + breakpoint_offset / sampling_rate
@@ -78,7 +81,7 @@ def common_psth_engine(spike_times,
             ax_raster.plot(curr_relative_times,
                            np.repeat(raster_trial_counter, len(curr_relative_times)),
                            'k|',
-                           rasterized=True)
+                           rasterized=rasterize)
             raster_trial_counter -= 1
 
         relative_times.append([x for x in curr_relative_times])
@@ -97,7 +100,7 @@ def common_psth_engine(spike_times,
         gaussian_psth = gaussian_smoothing(hist, edges, pre_stimulus_baseline, gaussian_window)
 
     if do_plot:
-        ax_psth.bar(bin_cuts[:-1], hist, 0.01, color='k')
+        ax_psth.bar(bin_cuts[:-1], hist, 0.01, color='k', align='edge')
         # ax_psth.hist(relative_times, bins=bin_cuts, edgecolor=None, facecolor='k')
 
         if gaussian_window is not None:
@@ -354,7 +357,8 @@ def plot_psth_AMdepth(memory_paths,
                       gaussian_window=5,
                       cur_breakpoint_df=None,
                       uniform_psth_y_lim=True,
-                      raster_max_y_lim=30.5):
+                      raster_max_y_lim=30.5,
+                      override_max_ylim=None):
     split_memory_path = split(REGEX_SEP, memory_paths[0])  # split path
     unit_id = split_memory_path[-1][:-4]  # Example unit id: SUBJ-ID-26_SUBJ-ID-26_200711_concat_cluster41
     split_timestamps_name = split("_*_", unit_id)  # split timestamps
@@ -392,143 +396,168 @@ def plot_psth_AMdepth(memory_paths,
 
     key_paths = [key_path for _, key_path in sorted(zip(session_times, key_paths), key=lambda pair: pair[0])]
 
-    output_name_pdf = output_subfolder + sep + output_name + '_AMdepth.pdf'
+    output_name = output_subfolder + sep + output_name + '_AMdepth'
 
     # Load spike times
     spike_times = np.genfromtxt(memory_paths[0])
 
     # Get max y lim for PSTHs across conditions (e.g. Pre, Active, Post) for the current unit
-    psth_max_ylim = None
-    if uniform_psth_y_lim:
-        psth_max_ylim = 0
-        for key_idx, key_path in enumerate(key_paths):
-            temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
-            if recording_type == 'synapse':
-                temp_session = temp_session[1]
-            elif recording_type == 'intan':
-                temp_session = "_".join(temp_session[1:4])
-            else:
-                print('Recording type not specified. Skipping;...')
-                return
-            breakpoint_offset_idx = cur_breakpoint_df.index[
-                cur_breakpoint_df['Session_file'].str.contains(temp_session)]
-            try:
-                breakpoint_offset = cur_breakpoint_df.loc[
-                    breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
-            except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
-                try:
-                    breakpoint_offset = cur_breakpoint_df.loc[
-                        breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
-                except KeyError:
-                    breakpoint_offset = 0  # first file; no breakpoint offset needed
+    if override_max_ylim is None:
+        psth_max_ylim = None
+        if uniform_psth_y_lim:
+            psth_max_ylim = 0
+            for key_idx, key_path in enumerate(key_paths):
+                temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
                 if recording_type == 'synapse':
-                    breakpoint_offset = breakpoint_offset / 24414.0625
+                    temp_session = temp_session[1]
                 elif recording_type == 'intan':
-                    breakpoint_offset = breakpoint_offset / 30000
+                    temp_session = "_".join(temp_session[1:4])
                 else:
                     print('Recording type not specified. Skipping;...')
                     return
+                breakpoint_offset_idx = cur_breakpoint_df.index[
+                    cur_breakpoint_df['Session_file'].str.contains(temp_session)]
+                try:
+                    breakpoint_offset = cur_breakpoint_df.loc[
+                        breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
+                except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
+                    try:
+                        breakpoint_offset = cur_breakpoint_df.loc[
+                            breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
+                    except KeyError:
+                        breakpoint_offset = 0  # first file; no breakpoint offset needed
+                    if recording_type == 'synapse':
+                        breakpoint_offset = breakpoint_offset / 24414.0625
+                    elif recording_type == 'intan':
+                        breakpoint_offset = breakpoint_offset / 30000
+                    else:
+                        print('Recording type not specified. Skipping;...')
+                        return
 
-            # Load key file
-            key_times = read_csv(key_path)
-            for stim in sorted(list(set(key_times['AMdepth']))):
-                # skip no-gos
-                if stim == 0:
-                    continue
-                cur_key_times = key_times[round(key_times['AMdepth'], 2) == round(stim, 2)]['Trial_onset']
+                # Load key file
+                key_times = read_csv(key_path)
+                for stim in sorted(list(set(key_times['AMdepth']))):
+                    # skip no-gos
+                    # if stim == 0:
+                    #     continue
 
-                ## do something really inefficient here to hold y_axis uniform across all stimuli and treatments
-                hist, _ = common_psth_engine(spike_times,
-                                             cur_key_times,
-                                             pre_stimulus_raster, post_stimulus_raster,
-                                             breakpoint_offset=breakpoint_offset,
-                                             hist_bin_size_ms=hist_bin_size_ms,
-                                             do_plot=False)
-                if np.max(hist) > psth_max_ylim:
-                    psth_max_ylim = np.max(hist)
+                    # Hard code here to eliminate all trials above 75 for SUBJ 174
+                    if subject_id == 'SUBJ-ID-174':
+                        key_times = key_times[key_times['TrialID'] < 75]
 
-    with PdfPages(output_name_pdf) as pdf:
-        for key_idx, key_path in enumerate(key_paths):
-            temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
+                    cur_key_times = key_times[round(key_times['AMdepth'], 2) == round(stim, 2)]['Trial_onset']
+
+                    ## do something really inefficient here to hold y_axis uniform across all stimuli and treatments
+                    hist, _ = common_psth_engine(spike_times,
+                                                 cur_key_times,
+                                                 pre_stimulus_raster, post_stimulus_raster,
+                                                 breakpoint_offset=breakpoint_offset,
+                                                 hist_bin_size_ms=hist_bin_size_ms,
+                                                 do_plot=False)
+                    if np.max(hist) > psth_max_ylim:
+                        psth_max_ylim = np.max(hist)
+    else:
+        psth_max_ylim = override_max_ylim
+
+    if OUTPUT_TYPE == 'pdf':
+        pdf = PdfPages(output_name + '.pdf')
+
+    # with PdfPages(output_name_pdf) as pdf:
+    for key_idx, key_path in enumerate(key_paths):
+        temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
+        if recording_type == 'synapse':
+            temp_session = temp_session[1]
+        elif recording_type == 'intan':
+            temp_session = "_".join(temp_session[1:4])
+        else:
+            print('Recording type not specified. Skipping;...')
+            return
+        breakpoint_offset_idx = cur_breakpoint_df.index[
+            cur_breakpoint_df['Session_file'].str.contains(temp_session)]
+        try:
+            breakpoint_offset = cur_breakpoint_df.loc[
+                breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
+
+        except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
+            try:
+                breakpoint_offset = cur_breakpoint_df.loc[
+                    breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
+            except KeyError:
+                breakpoint_offset = 0  # first file; no breakpoint offset needed
             if recording_type == 'synapse':
-                temp_session = temp_session[1]
+                breakpoint_offset = breakpoint_offset / 24414.0625
             elif recording_type == 'intan':
-                temp_session = "_".join(temp_session[1:4])
+                breakpoint_offset = breakpoint_offset / 30000
             else:
                 print('Recording type not specified. Skipping;...')
                 return
-            breakpoint_offset_idx = cur_breakpoint_df.index[
-                cur_breakpoint_df['Session_file'].str.contains(temp_session)]
-            try:
-                breakpoint_offset = cur_breakpoint_df.loc[
-                    breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
 
-            except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
-                try:
-                    breakpoint_offset = cur_breakpoint_df.loc[
-                        breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
-                except KeyError:
-                    breakpoint_offset = 0  # first file; no breakpoint offset needed
-                if recording_type == 'synapse':
-                    breakpoint_offset = breakpoint_offset / 24414.0625
-                elif recording_type == 'intan':
-                    breakpoint_offset = breakpoint_offset / 30000
-                else:
-                    print('Recording type not specified. Skipping;...')
-                    return
+        # Load key file
+        key_times = read_csv(key_path)
+        # Hard code here to eliminate all trials above 75 for SUBJ 174
+        if subject_id == 'SUBJ-ID-174':
+            key_times = key_times[key_times['TrialID'] < 75]
 
-            # Load key file
-            key_times = read_csv(key_path)
+        for stim in sorted(list(set(key_times['AMdepth']))):
+            # skip no-gos
+            # if stim == 0:
+            #     continue
 
-            for stim in sorted(list(set(key_times['AMdepth']))):
-                # skip no-gos
-                if stim == 0:
-                    continue
-
-                # Set up figure and axs
-                plt.clf()
-                f = plt.figure()
-                ax_psth = f.add_subplot(212)
-                ax_raster = f.add_subplot(211, sharex=ax_psth)
+            # Set up figure and axs
+            plt.clf()
+            f = plt.figure()
+            ax_psth = f.add_subplot(212)
+            ax_raster = f.add_subplot(211, sharex=ax_psth)
+            if gaussian_window is not None:
                 ax_gaussian = ax_psth.twinx()
+            else:
+                ax_gaussian = None
 
-                cur_key_times = key_times[round(key_times['AMdepth'], 2) == round(stim, 2)
-                                          ]['Trial_onset']
+            cur_key_times = key_times[round(key_times['AMdepth'], 2) == round(stim, 2)
+                                      ]['Trial_onset']
 
-                # Populate axs
-                common_psth_engine(spike_times=spike_times,
-                                   key_times=cur_key_times,
-                                   pre_stimulus_raster=pre_stimulus_raster,
-                                   post_stimulus_raster=post_stimulus_raster,
-                                   pre_stimulus_baseline=pre_stimulus_baseline, ax_gaussian=ax_gaussian,
-                                   gaussian_window=gaussian_window,
-                                   ax_psth=ax_psth, ax_raster=ax_raster,
-                                   hist_bin_size_ms=10,
-                                   breakpoint_offset=breakpoint_offset,
-                                   do_plot=True)
+            # Populate axs
+            common_psth_engine(spike_times=spike_times,
+                               key_times=cur_key_times,
+                               pre_stimulus_raster=pre_stimulus_raster,
+                               post_stimulus_raster=post_stimulus_raster,
+                               pre_stimulus_baseline=pre_stimulus_baseline, ax_gaussian=ax_gaussian,
+                               gaussian_window=gaussian_window,
+                               ax_psth=ax_psth, ax_raster=ax_raster,
+                               hist_bin_size_ms=10,
+                               breakpoint_offset=breakpoint_offset,
+                               do_plot=True,
+                               rasterize=False)
 
-                # Format axs
-                format_ax(ax_raster)
-                format_ax(ax_psth)
+            # Format axs
+            format_ax(ax_raster)
+            format_ax(ax_psth)
 
-                ax_raster.axis('off')
+            ax_raster.axis('off')
 
-                ax_psth.set_ylim([0, psth_max_ylim])
-                ax_raster.set_ylim([-0.5, raster_max_y_lim])
+            ax_psth.set_ylim([0, psth_max_ylim])
+            ax_raster.set_ylim([-0.5, raster_max_y_lim])
+            if gaussian_window is not None:
                 ax_gaussian.set_ylim([-1, 1])
-                ax_psth.set_ylabel("Spike rate by trial (Hz)")
-                ax_psth.set_xlabel("Time (s)")
-                f.suptitle("_".join(split("_*_", split(REGEX_SEP, key_path)[-1][:-4])[0:2]) +
-                           "_" + split("_*_", split(REGEX_SEP, memory_paths[0])[-1][:-4])[-1] + ":\n" +
-                           str(round(stim, 2)) + " AM depth")
+            ax_psth.set_ylabel("Spike rate by trial (Hz)")
+            ax_psth.set_xlabel("Time (s)")
+            f.suptitle("_".join(split("_*_", split(REGEX_SEP, key_path)[-1][:-4])[0:4]) +
+                       "_" + split("_*_", split(REGEX_SEP, memory_paths[0])[-1][:-4])[-1] + ":\n" +
+                       str(round(stim, 2)) + " AM depth")
 
+            if OUTPUT_TYPE == 'pdf':
                 pdf.savefig()
+            else:
+                if recording_type == 'intan':
+                    f.savefig(output_name + "_" + split("_*_", split(REGEX_SEP, key_path)[-1][:-4])[3] + "_" + str(round(stim, 2)) + '.eps', format='eps', dpi=600)
+                else:
+                    f.savefig(output_name + "_" +
+                              "".join(split("-*-", split("_*_", split(REGEX_SEP, key_path)[-1][:-4])[1])[1:3]) + "_" + str(
+                        round(stim, 2)) + '.eps', format='eps', dpi=600)
+            plt.close()
 
-                # f.savefig(output_path + sep + "_".join(split("_*_", split(REGEX_SEP, key_name)[-1][:-4])[0:2]) +
-                #           "_" + split("_*_", split(REGEX_SEP, memory_name)[-1][:-4])[-1] +
-                #           "_" + str(round(stim, 2)) + '.eps', format='eps', dpi=600)
-
-                plt.close()
+    if OUTPUT_TYPE == 'pdf':
+        pdf.close()
 
 
 def plot_psth_AMdepth_HitVsMiss(memory_paths,
@@ -734,13 +763,13 @@ def plot_psth_AMdepth_HitVsMiss(memory_paths,
                 plt.close()
 
 
-#
-def run_multiprocessing_plot(input_list):
-    memory_path, pre_stimulus_raster, post_stimulus_raster, \
+
+def run_multiprocessing_plot(input_list, output_type='pdf'):
+    memory_paths, pre_stimulus_raster, post_stimulus_raster, \
     wav_files_path, output_path, breakpoint_file_path, recording_type_dict = input_list
 
     # Split path name to get subject, session and unit ID for prettier output
-    split_memory_path = split(REGEX_SEP, memory_path[0])  # split path
+    split_memory_path = split(REGEX_SEP, memory_paths[0])  # split path
     unit_id = split_memory_path[-1][:-4]  # Example unit id: SUBJ-ID-26_SUBJ-ID-26_200711_concat_cluster41
     split_timestamps_name = split("_*_", unit_id)  # split timestamps
     subj_id = split("_*_", unit_id)[0]
@@ -761,46 +790,46 @@ def run_multiprocessing_plot(input_list):
     #     return
 
     gaussian_window = None
-
-    '''
-    Plot spout-offset PSTH
-    '''
-    # if capping trials at 500
-    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
-    mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
-    plot_psth_spoutOffset(memory_path,
-                          KEYS_PATH,
-                          pre_stimulus_raster, post_stimulus_raster,
-                          recording_type,
-                          gaussian_window=gaussian_window,
-                          hist_bin_size_ms=10,
-                          cur_breakpoint_df=cur_breakpoint_df,
-                          uniform_psth_y_lim=False,
-                          raster_max_y_lim=500.5)
-
-    '''
-    Plot spout-onset PSTH
-    '''
-    # if capping trials at 500
-    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
-    mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
-    plot_psth_spoutOnset(memory_path,
-                         KEYS_PATH,
-                         pre_stimulus_raster, post_stimulus_raster,
-                         recording_type,
-                         gaussian_window=gaussian_window,
-                         hist_bin_size_ms=10,
-                         cur_breakpoint_df=cur_breakpoint_df,
-                         uniform_psth_y_lim=False,
-                         raster_max_y_lim=500.5)
+    #
+    # '''
+    # Plot spout-offset PSTH
+    # '''
+    # # if capping trials at 500
+    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
+    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
+    # plot_psth_spoutOffset(memory_paths,
+    #                       KEYS_PATH,
+    #                       pre_stimulus_raster, post_stimulus_raster,
+    #                       recording_type,
+    #                       gaussian_window=gaussian_window,
+    #                       hist_bin_size_ms=10,
+    #                       cur_breakpoint_df=cur_breakpoint_df,
+    #                       uniform_psth_y_lim=False,
+    #                       raster_max_y_lim=500.5)
+    #
+    # '''
+    # Plot spout-onset PSTH
+    # '''
+    # # if capping trials at 500
+    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
+    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
+    # plot_psth_spoutOnset(memory_paths,
+    #                      KEYS_PATH,
+    #                      pre_stimulus_raster, post_stimulus_raster,
+    #                      recording_type,
+    #                      gaussian_window=gaussian_window,
+    #                      hist_bin_size_ms=10,
+    #                      cur_breakpoint_df=cur_breakpoint_df,
+    #                      uniform_psth_y_lim=False,
+    #                      raster_max_y_lim=500.5)
 
     '''
     Plot AM-depth PSTH
     '''
-    # if capping trials at 30
-    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
-    mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
-    plot_psth_AMdepth(memory_path,
+    # if capping raster trials at 100
+    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 8.
+    mpl.rcParams['lines.markeredgewidth'] = mpl.rcParams['lines.markersize'] / 2
+    plot_psth_AMdepth(memory_paths,
                       KEYS_PATH,
                       pre_stimulus_raster, post_stimulus_raster,
                       recording_type,
@@ -808,22 +837,23 @@ def run_multiprocessing_plot(input_list):
                       hist_bin_size_ms=10,
                       cur_breakpoint_df=cur_breakpoint_df,
                       uniform_psth_y_lim=True,
-                      raster_max_y_lim=30.5)
+                      raster_max_y_lim=100.5,
+                      override_max_ylim=50.5)
 
-    ''' 
-    Plot AM-depth PSTH by trial response (Hit vs Miss)
-    '''
-    # if capping trials at 30
-    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
-    mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
-    plot_psth_AMdepth_HitVsMiss(memory_path,
-                                KEYS_PATH,
-                                pre_stimulus_raster, post_stimulus_raster,
-                                recording_type,
-                                hist_bin_size_ms=10,
-                                cur_breakpoint_df=cur_breakpoint_df,
-                                uniform_psth_y_lim=True,
-                                raster_max_y_lim=30.5)
+    # '''
+    # Plot AM-depth PSTH by trial response (Hit vs Miss)
+    # '''
+    # # if capping trials at 30
+    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
+    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
+    # plot_psth_AMdepth_HitVsMiss(memory_paths,
+    #                             KEYS_PATH,
+    #                             pre_stimulus_raster, post_stimulus_raster,
+    #                             recording_type,
+    #                             hist_bin_size_ms=10,
+    #                             cur_breakpoint_df=cur_breakpoint_df,
+    #                             uniform_psth_y_lim=True,
+    #                             raster_max_y_lim=30.5)
 
 
 """
@@ -833,15 +863,22 @@ warnings.filterwarnings("ignore")
 
 SPIKES_PATH = '.' + sep + sep.join(['Data', 'Spike times'])
 KEYS_PATH = '.' + sep + sep.join(['Data', 'Key files'])
-OUTPUT_PATH = '.' + sep + sep.join(['Data', 'Output', 'PSTHs'])
+OUTPUT_PATH = '.' + sep + sep.join(['Data', 'Output', 'PSTHs new'])
 BREAKPOINT_PATH = '.' + sep + sep.join(['Data', 'Breakpoints'])
+OUTPUT_TYPE = 'pdf'
 
 WAV_FILES_PATH = r'./Data/Stimuli'  # TODO: design AM stimuli .wav
 
 # SAMPLING_RATE = 30000
 
 # Only run these cells/su or None to run all
+
+# ActiveBaseline Decrease, increase, and none representatives
+# CELLS_TO_RUN = ['SUBJ-ID-154_210511_concat_cluster1267',
+#                 'SUBJ-ID-151_210510_concat_cluster1466',
+#                 'SUBJ-ID-231_210710_concat_cluster572']
 CELLS_TO_RUN = None
+
 SUBJECTS_TO_RUN = None
 
 RECORDING_TYPE_DICT = {
@@ -852,8 +889,8 @@ RECORDING_TYPE_DICT = {
     'SUBJ-ID-232': 'intan',
 }
 
-PRE_STIMULUS_RASTER = 2
-POST_STIMULUS_RASTER = 4
+PRE_STIMULUS_RASTER = 0
+POST_STIMULUS_RASTER = 1.
 NUMBER_OF_CORES = 4
 
 # Set plotting parameters
