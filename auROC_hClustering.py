@@ -3,9 +3,11 @@ import json
 import csv
 from matplotlib import pyplot as plt
 from scipy.cluster.hierarchy import dendrogram, linkage, fcluster, cophenet
+from scipy.signal import resample
+from astropy.convolution import convolve_fft, Gaussian1DKernel, Box1DKernel
 from scipy.spatial.distance import pdist
 from sklearn.datasets import load_iris
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.cluster import AgglomerativeClustering, MeanShift, KMeans
 from glob import glob
 import pandas as pd
 import seaborn as sns
@@ -15,6 +17,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 from sklearn.metrics import pairwise_distances
 from os.path import sep
 import platform
+
+from rpy2.robjects.packages import importr, data
 
 # Tweak the regex file separator for cross-platform compatibility
 if platform.system() == 'Windows':
@@ -103,12 +107,12 @@ def optimalK(data, nrefs=3, maxClusters=15):
             refDisps[i] = refDisp
 
         # Fit cluster to original data and create dispersion
-        # km = KMeans(k)
-        km = AgglomerativeClustering(distance_threshold=None, n_clusters=k, linkage='ward', compute_distances=True)
+        km = KMeans(k)
+        # km = AgglomerativeClustering(distance_threshold=None, n_clusters=k, linkage='ward', compute_distances=True)
         km.fit(data)
 
-        # origDisp = km.inertia_
-        origDisp = np.sum(km.distances_**2)
+        origDisp = km.inertia_
+        # origDisp = np.sum(km.distances_**2)
 
         # Calculate gap statistic
         gap = np.log(np.mean(refDisps)) - np.log(origDisp)
@@ -152,18 +156,32 @@ BASELINE_DURATION_FOR_FR = 1  # in seconds; for firing rate calculation to non-A
 STIM_DURATION_FOR_FR = 1  # in seconds; for firing rate calculation to AM trials
 PRETRIAL_DURATION_FOR_SPIKETIMES = 2  # in seconds; for grabbing spiketimes around AM trials
 POSTTRIAL_DURATION_FOR_SPIKETIMES = 5  # in seconds; for grabbing spiketimes around AM trials
-AUROC_BINSIZE = 0.1
 
-CLUSTERING_TIME_START = -0.5
-CLUSTERING_TIME_END = 1
+
 
 OUTPUT_FOLDER = '.' + sep + sep.join(['Data', 'Output'])
 INPUT_FOLDER = '.' + sep + sep.join(['Data', 'Output', 'JSON files'])
 # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
 all_json = glob(INPUT_FOLDER + sep + '*json')
 
-col_name = ['Hit_auroc', 'SpoutOff_hits_auroc', 'Miss_auroc', 'FA_auroc', 'allSpoutOnset_auroc', 'allSpoutOffset_auroc', 'AMTrial_auroc']
-# col_name = ['SpoutOff_hits_auroc']
+BINSIZE = 0.1
+CLUSTERING_TIME_START = 0
+CLUSTERING_TIME_END = 2
+col_name = ['Hit_auroc', 'SpoutOff_hits_auroc', 'Miss_auroc', 'FA_auroc', 'allSpoutOnset_auroc', 'allSpoutOffset_auroc',
+            'AMTrial_auroc', 'allSpoutOffset_auroc']
+
+# CLUSTERING_TIME_START = -1
+# CLUSTERING_TIME_END = 2
+# col_name = ['allSpoutOnset_auroc']
+
+# CLUSTERING_TIME_START = 0
+# CLUSTERING_TIME_END = 2
+# col_name = ['Hit_psth', 'SpoutOff_hits_psth', 'Miss_psth', 'FA_psth', 'allSpoutOnset_psth', 'allSpoutOffset_psth',
+#             'AMTrial_psth', 'allSpoutOnset_psth', 'allSpoutOffset_psth']
+
+# CLUSTERING_TIME_START = -1
+# CLUSTERING_TIME_END = 2
+# col_name = ['allSpoutOnset_psth']
 
 for cur_col in col_name:
     unit_list = []
@@ -188,13 +206,30 @@ for cur_col in col_name:
         #     auroc_curve = np.array(active_data[variable]
         #                            [:int((3 + PRETRIAL_DURATION_FOR_SPIKETIMES) / AUROC_BINSIZE)])
         # else:
-        auroc_curve = np.array(active_data[cur_col])
+
+        response_curve = np.array(active_data[cur_col])
 
         # Exclude units without responses (no FA trials for example)
-        if len(auroc_curve) == 0:
+        if len(response_curve) == 0:
             continue
 
-        auroc_list.append(auroc_curve)
+        # Z-score firing rate
+        if 'psth' in cur_col:
+            boxcar_points = 10
+            # response_curve = convolve_fft(response_curve, Box1DKernel(boxcar_points))
+            response_curve = resample(response_curve, len(response_curve) // boxcar_points)
+
+            relevant_indices = np.arange((-PRETRIAL_DURATION_FOR_SPIKETIMES) /
+                                         BINSIZE, (-PRETRIAL_DURATION_FOR_SPIKETIMES + BASELINE_DURATION_FOR_FR) / BINSIZE,dtype=np.int32)
+            response_curve_baseline_mean = np.mean(response_curve[relevant_indices])
+            response_curve_baseline_sd = np.std(response_curve[relevant_indices], ddof=1)
+            if response_curve_baseline_sd == 0:
+                continue
+            response_curve = (response_curve - response_curve_baseline_mean)/response_curve_baseline_sd
+
+
+
+        auroc_list.append(response_curve)
         unit_list.append(cur_dict['Unit'])
 
 
@@ -222,13 +257,28 @@ for cur_col in col_name:
 
 
     relevant_indices = np.arange((CLUSTERING_TIME_START + PRETRIAL_DURATION_FOR_SPIKETIMES) /
-                                 AUROC_BINSIZE, (CLUSTERING_TIME_END + PRETRIAL_DURATION_FOR_SPIKETIMES) / AUROC_BINSIZE)
+                                 BINSIZE, (CLUSTERING_TIME_END + PRETRIAL_DURATION_FOR_SPIKETIMES) / BINSIZE)
 
     relevant_snippet = np.array([cur_auroc[[int(idx) for idx in relevant_indices]] for cur_auroc in plot_list])
     # relevant_snippet = [cur_auroc for cur_auroc in auroc_list]
-    row_link = linkage(relevant_snippet, method='ward')
-    clusters = fcluster(row_link, 2, criterion='maxclust')
-    c, coph_dists = cophenet(row_link, pdist(relevant_snippet))
+
+
+    # link_type = ['single', 'complete', 'average', 'ward']
+    # cophen_corrs = []
+    # for i in link_type:
+    #     clust_dist = linkage(relevant_snippet, method=i, metric='euclidean')
+    #
+    #     # find the cophenetic correlation by comparing the clustering distances
+    #     # and the euclidean distances
+    #     cophen_corr, cophen_array = cophenet(clust_dist, pdist(relevant_snippet))
+    #     cophen_corrs.append(cophen_corr)
+    #
+    #     print('cophenetic correlation of ' + i + ' method: ', cophen_corr)
+    #
+    # # Choose best link type based on cophenet
+    # row_link = linkage(relevant_snippet, method=link_type[cophen_corrs.index(np.max(cophen_corrs))], metric='euclidean')
+
+    row_link = linkage(relevant_snippet, method='ward', metric='euclidean', optimal_ordering=False)
 
     last = row_link[-10:, 2]
     last_rev = last[::-1]
@@ -237,10 +287,8 @@ for cur_col in col_name:
     acceleration = np.diff(last, 2)  # 2nd derivative of the distances
     acceleration_rev = acceleration[::-1]
 
-    # plt.plot(idxs[:-2] + 1, acceleration_rev)
-    # plt.show()
-
     k = acceleration_rev.argmax() + 2  # if idx 0 is the max of this we want 2 clusters
+    # k = 5
     print("clusters:", k)
     clusters = fcluster(row_link, k, criterion='maxclust')
 
@@ -258,17 +306,24 @@ for cur_col in col_name:
 
     with PdfPages(sep.join([OUTPUT_FOLDER, cur_col + '_HClustering.pdf'])) as pdf:
         plt.figure()
+
+        # If you desire to smooth the heatmap
+        # g = sns.clustermap([convolve_fft(cell_z, Gaussian1DKernel(stddev=3), preserve_nan=True) for cell_z in plot_list],
+        #                    row_cluster=True, col_cluster=False, row_linkage=row_link, vmin=-5, vmax=5,
+        #                    row_colors=row_colors.values)
+
         g = sns.clustermap(plot_list, row_cluster=True, col_cluster=False, row_linkage=row_link, row_colors=row_colors.values)
-        g.ax_heatmap.set_xticklabels( [np.round(float(a.get_text()) * AUROC_BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES, 1)
+
+        g.ax_heatmap.set_xticklabels( [np.round(float(a.get_text()) * BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES, 1)
                                        for a in g.ax_heatmap.get_xticklabels()] , size='xx-small')
-        g.ax_heatmap.set_xlabel('Time (s)')
+        g.ax_heatmap.set_xlabel('Time relative to event (s)')
         g.ax_heatmap.set_ylabel('Unit # / clustering')
         g.ax_heatmap.set_title(cur_col)
-        g.ax_heatmap.axvline(x=(CLUSTERING_TIME_START + PRETRIAL_DURATION_FOR_SPIKETIMES) / AUROC_BINSIZE, color='lightcyan', linestyle='--')
-        g.ax_heatmap.axvline(x=(CLUSTERING_TIME_END + PRETRIAL_DURATION_FOR_SPIKETIMES) / AUROC_BINSIZE, color='lightcyan', linestyle='--')
+        g.ax_heatmap.axvline(x=(CLUSTERING_TIME_START + PRETRIAL_DURATION_FOR_SPIKETIMES) / BINSIZE, color='lightcyan', linestyle='--')
+        g.ax_heatmap.axvline(x=(CLUSTERING_TIME_END + PRETRIAL_DURATION_FOR_SPIKETIMES) / BINSIZE, color='lightcyan', linestyle='--')
 
         if cur_col == 'SpoutOff_hits_auroc':
-            g.ax_heatmap.set_xlim([0, (POSTTRIAL_DURATION_FOR_SPIKETIMES + PRETRIAL_DURATION_FOR_SPIKETIMES - 1) / AUROC_BINSIZE])
+            g.ax_heatmap.set_xlim([0, (POSTTRIAL_DURATION_FOR_SPIKETIMES + PRETRIAL_DURATION_FOR_SPIKETIMES - 1) / BINSIZE])
 
         # plt.show()
         pdf.savefig()
@@ -276,29 +331,38 @@ for cur_col in col_name:
 
     # Plot average response by cluster group
     # Transform responses and cluster id into a dataframe
-    x_axis = np.arange(0, np.size(plot_list, 1)) * AUROC_BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES
+    x_axis = np.arange(0, np.size(plot_list, 1)) * BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES
     df = pd.DataFrame({'Unit': np.repeat(unit_list, np.size(plot_list, 1)),
                        'Time_s': np.tile(x_axis, np.size(plot_list, 0)),
                        'auROC': plot_list.flatten(),
                        'Cluster': np.repeat(clusters, np.size(plot_list, 1))})
+    df = df.convert_dtypes()
+    df = df.astype({'Cluster': 'category'})
 
     with PdfPages(sep.join([OUTPUT_FOLDER, cur_col + '_meanResponse.pdf'])) as pdf:
         fig, ax = plt.subplots()
         sns.set_style("ticks")
         # g = sns.relplot(data=df, x="Sample", y="auROC", hue="Cluster", palette='Set2',
         #             units='Unit', kind='line', estimator=None, alpha=0.2, ax=ax)
-        g = sns.relplot(data=df, x="Time_s", y="auROC", hue="Cluster", kind='line', ax=ax, palette=sns.husl_palette(len(unique_clusters)))
+        g = sns.relplot(data=df, x="Time_s", y="auROC", hue="Cluster", kind='line', ax=ax,
+                        palette=sns.husl_palette(len(unique_clusters)))  # 95% CI is the default
         # g.ax.set_xticks(np.arange(0, np.size(plot_list, 1)+1, 5))  # <--- set the ticks first
         # g.ax.set_xticklabels(g.ax.get_xticks() * AUROC_BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES)
         g.ax.axvline(x=0, color='black',
                              linestyle='--')
         g.ax.fill_betweenx(y=[0, 1], x1=CLUSTERING_TIME_START, x2=CLUSTERING_TIME_END, facecolor='black', alpha=0.1)
-        g.ax.set_xlabel('Time relative to Spout-off triggering Hit (s)')
-        g.ax.set_ylabel('auROC')
-        g.ax.set_ylim([0, 1])
+        g.ax.set_xlabel('Time relative to event (s)')
+
+        if 'auROC' in cur_col:
+            g.ax.set_ylabel('auROC')
+            g.ax.set_ylim([0, 1])
+        elif 'psth' in cur_col:
+            g.ax.set_ylabel('Spikes/s')
+
 
         if cur_col == 'SpoutOff_hits_auroc':
             g.ax.set_xlim([-PRETRIAL_DURATION_FOR_SPIKETIMES, POSTTRIAL_DURATION_FOR_SPIKETIMES - 1])
+
         sns.despine()
         # plt.show()
         pdf.savefig()
