@@ -250,15 +250,15 @@ def calculate_auROC_hit(cur_unitData,
 
     return cur_unitData
 
-def calculate_auROC_miss(cur_unitData,
-                                session_name,
-                                pre_stimulus_baseline_start,
-                                pre_stimulus_baseline_end,
-                                pre_stimulus_raster,
-                                post_stimulus_raster,
-                                psth_binsize=0.01,
-                                auroc_binsize=0.1
-                                ):
+def calculate_auROC_missAllTrials(cur_unitData,
+                                  session_name,
+                                  pre_stimulus_baseline_start,
+                                  pre_stimulus_baseline_end,
+                                  pre_stimulus_raster,
+                                  post_stimulus_raster,
+                                  psth_binsize=0.01,
+                                  auroc_binsize=0.1
+                                  ):
     """
     This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
     For now, this function only calculates the auROC to a spout-off event that triggered a Hit;
@@ -298,13 +298,13 @@ def calculate_auROC_miss(cur_unitData,
     # For PSTH calculation
     bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
 
-    # Load data and calculate auROCs based on trial responses aligned to SpoutOff triggering a hit
+    # Load data and calculate auROCs based on trial responses aligned to events
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'Miss']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
     cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
 
-    # Grab spikes around misses
+    # Grab spikes around trials
     trial_spikes = cur_df[cur_df['Miss'] == 1]['Trial_spikes']
 
     # If no Misses, skip
@@ -331,6 +331,95 @@ def calculate_auROC_miss(cur_unitData,
     cur_unitData["Session"][session_name]['Miss_auroc'] = auroc_curve
 
     return cur_unitData
+
+
+def calculate_auROC_missByShock(cur_unitData,
+                                  session_name,
+                                  pre_stimulus_baseline_start,
+                                  pre_stimulus_baseline_end,
+                                  pre_stimulus_raster,
+                                  post_stimulus_raster,
+                                  psth_binsize=0.01,
+                                  auroc_binsize=0.1
+                                  ):
+    """
+    This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
+    For now, this function only calculates the auROC to a spout-off event that triggered a Hit;
+        skip if no hits are found
+
+    From Cohen et al., Nature, 2012:
+        a, Raster plot from 15 trials of 149 big-reward trials from a dopaminergic
+        neuron. r1 and r2 correspond to two example 100-ms bins. b, Average firing rate of this neuron. c, Area
+        under the receiver operating characteristic curve (auROC) for r1, in which the neuron increased its firing
+        rate relative to baseline. We compared the histogram of spike counts during the baseline period (dashed
+        line) to that during a given bin (solid line) by moving a criterion from zero to the maximum firing rate (in
+        this example, 68 spikes/s). We then plotted the probability that the activity during r1 was greater than the
+        criteria against the probability that the baseline activity was greater than the criteria. The area under this
+        curve quantifies the degree of overlap between the two spike count distributions (i.e., the discriminability
+        of the two).
+
+    :param cur_unitData: class UnitData
+        An object holding all relevant info about a unit's firing
+    :param session_name: string
+        The name of the session we're interested in calculating auROCs for
+    :param pre_stimulus_baseline_start: number
+        Start of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_baseline_end: number
+        End of period to calculate the baseline for the auROC in relation to trigger (negative means after); in seconds
+    :param pre_stimulus_raster: number
+        Start of PSTH in relation to trigger (negative means after); in seconds
+    :param post_stimulus_raster: number
+        End of PSTH in relation to trigger (negative means before, but not sure why you would use negative); in seconds
+    :param psth_binsize: number; optional
+        Bin size for PSTH calculation; default is 0.01 s (Cohen et al., Nature, 2012)
+    :param auroc_binsize: number; optional
+        Bin size for auROC calculation; default is 0.1 s (Cohen et al., Nature, 2012)
+
+    :return: cur_unitData: class UnitData
+    """
+
+    # For PSTH calculation
+    bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
+
+    # Load data and calculate auROCs based on trial responses aligned to event
+    # Need to create a deep copy here or pandas will change original input (incredibly)
+    key_filter = ['Trial_spikes', 'Miss', 'ShockFlag']
+    copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
+    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+
+    # Grab spikes around misses
+    shock_labels = ['Off', 'On']  # 0: Off, 1: On
+    for shock_flag, shock_label in enumerate(shock_labels):
+        trial_spikes = cur_df[(cur_df['Miss'] == 1) & (cur_df['ShockFlag'] == shock_flag)]['Trial_spikes']
+
+        # The field that goes into the JSON file
+        output_field = 'Miss_shock' + shock_labels[shock_flag]
+
+        # If no trials, skip
+        if len(trial_spikes) == 0:
+            cur_unitData["Session"][session_name][output_field + '_psth'] = []
+            cur_unitData["Session"][session_name][output_field + '_auroc'] = []
+            return cur_unitData
+
+        # Flatten all trials into a 1D array
+        zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
+
+        # Generate a PSTH
+        hist, edges = np.histogram(zero_centered_spikes, bins=bin_cuts)
+
+        # Convert to Hz/trial
+        hist = np.round((hist / len(trial_spikes.index)) / psth_binsize, 4)
+
+        # Calculate auROC
+        auroc_curve = auROC_response_curve(hist, edges,
+                                           pre_stimulus_baseline_start, pre_stimulus_baseline_end,
+                                           auroc_binsize=auroc_binsize)
+
+        cur_unitData["Session"][session_name][output_field + '_psth'] = hist
+        cur_unitData["Session"][session_name][output_field + '_auroc'] = auroc_curve
+
+    return cur_unitData
+
 
 def calculate_auROC_FA(cur_unitData,
                                 session_name,
@@ -386,7 +475,7 @@ def calculate_auROC_FA(cur_unitData,
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
     cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
 
-    # Grab spikes around misses
+    # Grab spikes around FAs
     trial_spikes = cur_df[cur_df['FA'] == 1]['Trial_spikes']
 
     # If no Misses, skip
@@ -509,15 +598,15 @@ def calculate_auROC_AMTrial(cur_unitData,
     return cur_unitData
 
 
-def calculate_auROC_AMdepth(cur_unitData,
-                                session_name,
-                                pre_stimulus_baseline_start,
-                                pre_stimulus_baseline_end,
-                                pre_stimulus_raster,
-                                post_stimulus_raster,
-                                psth_binsize=0.01,
-                                auroc_binsize=0.1
-                                ):
+def calculate_auROC_AMdepthHitVsMiss(cur_unitData,
+                                     session_name,
+                                     pre_stimulus_baseline_start,
+                                     pre_stimulus_baseline_end,
+                                     pre_stimulus_raster,
+                                     post_stimulus_raster,
+                                     psth_binsize=0.01,
+                                     auroc_binsize=0.1
+                                     ):
     """
     This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
     For now, this function only calculates the auROC to different AM depths;
@@ -554,14 +643,12 @@ def calculate_auROC_AMdepth(cur_unitData,
     :return: cur_unitData: class UnitData
     """
 
-    output_name = 'AMdepth'
-
     # For PSTH calculation
     bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
 
     # Load data and calculate auROCs based on trial responses aligned to all AM trial
     # Need to create a deep copy here or pandas will change original input (incredibly)
-    key_filter = ['Trial_spikes', 'Hit', 'Miss', 'AMdepth']
+    key_filter = ['Trial_spikes', 'Hit', 'Miss', 'AMdepth', 'ShockFlag']
     copy_relevant_unitData = {x: cur_unitData["Session"][session_name][x] for x in key_filter}
     try:
         cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
@@ -570,18 +657,28 @@ def calculate_auROC_AMdepth(cur_unitData,
         return cur_unitData
 
     amdepths = np.round(sorted(list(set(copy_relevant_unitData['AMdepth']))), 2)
+    shock_labels = ['Off', 'On', 'NA']  # 0: Off, 1: On
     for hit_or_miss in ('Hit', 'Miss'):
         for amdepth in amdepths:
+            trials = cur_df[(np.round(cur_df['AMdepth'], 2) == amdepth) &
+                                  (cur_df[hit_or_miss] == 1)]
+
             # Grab spikes around trials
-            trial_spikes = cur_df[(np.round(cur_df['AMdepth'], 2) == amdepth) &
-                                  (cur_df[hit_or_miss] == 1)]['Trial_spikes']
+            trial_spikes = trials['Trial_spikes']
+
+            if len(trial_spikes) == 0:
+                shockFlag = 2  # NA
+            else:
+                shockFlag = list(set(trials['ShockFlag']))[0]
+
+            # The field that goes into the JSON file
+            output_field = 'AMdepth_' + '_' + str(amdepth) + '_' + hit_or_miss + '_shock' + shock_labels[shockFlag]
 
             # If no spikes, skip
             if len(trial_spikes) == 0:
-                cur_unitData["Session"][session_name][output_name + '_' + hit_or_miss + '_' + str(amdepth) + '_psth'] = []
-                cur_unitData["Session"][session_name][output_name + '_' + hit_or_miss + '_' + str(amdepth) + '_auroc'] = []
+                cur_unitData["Session"][session_name][output_field + '_psth'] = []
+                cur_unitData["Session"][session_name][output_field + '_auroc'] = []
                 continue
-
 
             # Flatten all trials into a 1D array
             zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
@@ -597,21 +694,21 @@ def calculate_auROC_AMdepth(cur_unitData,
                                                pre_stimulus_baseline_start, pre_stimulus_baseline_end,
                                                auroc_binsize=auroc_binsize)
 
-            cur_unitData["Session"][session_name][output_name + '_' + hit_or_miss + '_' + str(amdepth) + '_psth'] = hist
-            cur_unitData["Session"][session_name][output_name + '_' + hit_or_miss + '_' + str(amdepth) + '_auroc'] = auroc_curve
+            cur_unitData["Session"][session_name][output_field + '_psth'] = hist
+            cur_unitData["Session"][session_name][output_field + '_auroc'] = auroc_curve
 
     return cur_unitData
 
 
-def calculate_auROC_AMdepthByDepth(cur_unitData,
-                                session_name,
-                                pre_stimulus_baseline_start,
-                                pre_stimulus_baseline_end,
-                                pre_stimulus_raster,
-                                post_stimulus_raster,
-                                psth_binsize=0.01,
-                                auroc_binsize=0.1
-                                ):
+def calculate_auROC_AMdepthAllTrials(cur_unitData,
+                                     session_name,
+                                     pre_stimulus_baseline_start,
+                                     pre_stimulus_baseline_end,
+                                     pre_stimulus_raster,
+                                     post_stimulus_raster,
+                                     psth_binsize=0.01,
+                                     auroc_binsize=0.1
+                                     ):
     """
     This function processes data for the area under Receiver Operating Characteristic curve (auROC) calculation
     For now, this function only calculates the auROC to different AM depths;
@@ -695,6 +792,7 @@ def calculate_auROC_AMdepthByDepth(cur_unitData,
 
     return cur_unitData
 
+
 def calculate_auROC_allSpoutOnset(cur_unitData,
                             session_name,
                             pre_stimulus_baseline_start,
@@ -713,13 +811,13 @@ def calculate_auROC_allSpoutOnset(cur_unitData,
     # For PSTH calculation
     bin_cuts = np.arange(-pre_stimulus_raster, post_stimulus_raster, psth_binsize)
 
-    # Load data and calculate auROCs based on trial responses aligned to all AM trial
+    # Load data and calculate auROCs based on trial responses aligned to events
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Onset_rasters']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
     cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
 
-    # Grab spikes around misses
+    # Grab spikes around events
     trial_spikes = cur_df['Onset_rasters']
 
     # If no spikes, skip

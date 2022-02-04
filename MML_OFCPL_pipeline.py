@@ -1,21 +1,19 @@
-from get_fr_allSpoutTimestamps import *
+import json
+from os import remove
+import warnings
+from datetime import datetime
+from multiprocessing import Pool, cpu_count, current_process
+
 from get_fr_toTrials import *
 from calculate_auROC import *
-import pandas as pd
-from re import split, search
-from glob import glob
-from os.path import sep
-from os import remove
-import platform
-from datetime import datetime
-import warnings
-from multiprocessing import Pool, cpu_count, current_process
+from get_fr_allSpoutTimestamps import *
 
 # Tweak the regex file separator for cross-platform compatibility
 if platform.system() == 'Windows':
     REGEX_SEP = sep * 2
 else:
     REGEX_SEP = sep
+
 
 class NumpyEncoder(json.JSONEncoder):
     """ Special json encoder for numpy types """
@@ -124,69 +122,86 @@ def run_pipeline(input_list):
 
         # Flag to indicate this is the first entry to the CSV file so headers will be printed
         # Check if worker file already exists then turn flag to false
-        if len(glob(OUTPUT_PATH + sep + current_process().name + "_" + CSV_PRENAME + '*.csv')) > 0:
+        if len(glob(OUTPUT_PATH + sep + current_process().name + "_tempfile_" + CSV_PRENAME + '*.csv')) > 0:
             first_entry_flag = False
         else:
             first_entry_flag = True
-        #
-        # cur_unitData = get_fr_toTrials(memory_path,
-        #                                key_path_info,
-        #                                key_path_spout,
-        #                                unit_name=unit_id,
-        #                                csv_pre_name=current_process().name + "_" + CSV_PRENAME,
-        #                                first_cell_flag=first_entry_flag,
-        #                                baseline_duration_for_fr_s=BASELINE_DURATION_FOR_FR,
-        #                                stim_duration_for_fr_s=STIM_DURATION_FOR_FR,
-        #                                pre_stim_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                post_stim_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES,
-        #                                output_path=OUTPUT_PATH,
-        #                                breakpoint_offset=breakpoint_offset,
-        #                                cur_unitData=cur_unitData)
-        #
+
+        cur_unitData = get_fr_toTrials(memory_path,
+                                       key_path_info,
+                                       key_path_spout,
+                                       unit_name=unit_id,
+                                       csv_pre_name=current_process().name + "_tempfile_" + CSV_PRENAME,
+                                       first_cell_flag=first_entry_flag,
+                                       baseline_duration_for_fr_s=BASELINE_DURATION_FOR_FR,
+                                       stim_duration_for_fr_s=STIM_DURATION_FOR_FR,
+                                       pre_stim_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+                                       post_stim_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES,
+                                       output_path=OUTPUT_PATH,
+                                       breakpoint_offset=breakpoint_offset,
+                                       cur_unitData=cur_unitData)
+
+        # cur_unitData = get_trial_info_only(key_path_info,
+        #                                    cur_unitData)
+        write_json(unit_id, cur_unitData)
         # # Use unitData to calculate auROCs for specified periods
-        # # Skip passive for now
-        # if 'Passive' in key_f:
-        #     pass
-        # else:
-        #     cur_unitData = calculate_auROC_spoutOffHit(cur_unitData=cur_unitData,
-        #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-        #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-        #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-        #                                                )
+        '''
+        THIS BLOCK OF FUNCTIONS IS ONLY RELEVANT FOR ACTIVE SESSIONS
+        '''
+        if 'Passive' in key_f:
+            pass
+        else:
+            pass
+            #     cur_unitData = calculate_auROC_spoutOffHit(cur_unitData=cur_unitData,
+            #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+            #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+            #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+            #                                                )
+            #     write_json(unit_id, cur_unitData)
+            #     cur_unitData = calculate_auROC_hit(cur_unitData=cur_unitData,
+            #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+            #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+            #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+            #                                                )
+            #     write_json(unit_id, cur_unitData)
+            # cur_unitData = calculate_auROC_miss(cur_unitData=cur_unitData,
+            #                                            session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+            #                                            pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                            pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+            #                                            pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                            post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+            #                                            )
+            #     write_json(unit_id, cur_unitData)
+            #     cur_unitData = calculate_auROC_FA(cur_unitData=cur_unitData,
+            #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+            #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+            #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+            #                                                )
+            #      write_json(unit_id, cur_unitData)
+            # cur_unitData = calculate_auROC_AMdepthHitVsMiss(cur_unitData=cur_unitData,
+            #                                                 session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+            #                                                 pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                 pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+            #                                                 pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+            #                                                 post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+            #                                                 )
+        #     write_json(unit_id, cur_unitData)
         #
-        #     cur_unitData = calculate_auROC_hit(cur_unitData=cur_unitData,
+        #     cur_unitData = calculate_auROC_missByShock(cur_unitData=cur_unitData,
         #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
         #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
         #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
         #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
         #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
         #                                                )
-        #
-        #     cur_unitData = calculate_auROC_miss(cur_unitData=cur_unitData,
-        #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-        #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-        #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-        #                                                )
-        #
-        #     cur_unitData = calculate_auROC_FA(cur_unitData=cur_unitData,
-        #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-        #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-        #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-        #                                                )
-        #     cur_unitData = calculate_auROC_AMdepth(cur_unitData=cur_unitData,
-        #                                                session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-        #                                                pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-        #                                                pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-        #                                                post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-        #                                                )
-        #
+        #     write_json(unit_id, cur_unitData)
+        # #
         #     cur_unitData = get_fr_allSpoutTimestamps(memory_path,
         #                                              key_path_spout,
         #                                              unit_id,
@@ -200,6 +215,7 @@ def run_pipeline(input_list):
         #                                              breakpoint_offset=breakpoint_offset,
         #                                              session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
         #                                              cur_unitData=cur_unitData)
+        #     write_json(unit_id, cur_unitData)
         #
         #     cur_unitData = calculate_auROC_allSpoutOnset(cur_unitData=cur_unitData,
         #                                                  session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
@@ -208,6 +224,7 @@ def run_pipeline(input_list):
         #                                                  pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
         #                                                  post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
         #                                                  )
+        #     write_json(unit_id, cur_unitData)
         #
         #     cur_unitData = calculate_auROC_allSpoutOffset(cur_unitData=cur_unitData,
         #                                                   session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
@@ -216,8 +233,11 @@ def run_pipeline(input_list):
         #                                                   pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
         #                                                   post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
         #                                                   )
-        #
-        # # For both active and passive sessions
+        #     write_json(unit_id, cur_unitData)
+
+        '''
+        THIS BLOCK OF FUNCTIONS IS RELEVANT FOR BOTH PASSIVE AND ACTIVE SESSIONS
+        '''
         # cur_unitData = calculate_auROC_AMTrial(cur_unitData=cur_unitData,
         #                                            session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
         #                                            pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
@@ -227,50 +247,65 @@ def run_pipeline(input_list):
         #                                            )
         #
 
-        cur_unitData = calculate_auROC_AMdepthByDepth(cur_unitData=cur_unitData,
-                                               session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-                                               pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-                                               pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-                                               pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-                                               post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-                                               )
+        # cur_unitData = calculate_auROC_AMdepthAllTrials(cur_unitData=cur_unitData,
+        #                                        session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+        #                                        pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+        #                                        pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+        #                                        pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+        #                                        post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+        #                                        )
 
         # TODO:
-            # cur_unitData = calculate_auROC_aboveVsBelowThreshold(cur_unitData=cur_unitData,
-            #                                            session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
-            #                                            pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
-            #                                            pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
-            #                                            pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
-            #                                            post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
-            #                                            )
+        # cur_unitData = calculate_auROC_aboveVsBelowThreshold(cur_unitData=cur_unitData,
+        #                                            session_name=split(REGEX_SEP, key_path_info)[-1][:-4],
+        #                                            pre_stimulus_baseline_start=PRETRIAL_DURATION_FOR_SPIKETIMES,
+        #                                            pre_stimulus_baseline_end=PRETRIAL_DURATION_FOR_SPIKETIMES - 1,
+        #                                            pre_stimulus_raster=PRETRIAL_DURATION_FOR_SPIKETIMES,
+        #                                            post_stimulus_raster=POSTTRIAL_DURATION_FOR_SPIKETIMES
+        #                                            )
 
 
-
-
+def write_json(unit_id, cur_unitData):
     # # Save as json file
     json_filename = unit_id + '_unitData.json'
     with open(OUTPUT_PATH + sep + 'JSON files' + sep + json_filename, 'w') as cur_json:
         cur_json.write(json.dumps(cur_unitData, cls=NumpyEncoder, indent=4))
 
 
-def compile_result_csv():
-    master_sheet_name_trialfr = CSV_PRENAME + '_AMsound_firing_rate.csv'
-    master_sheet_name_spoutfr = CSV_PRENAME + '_allSpoutOnsetOffset_firing_rate.csv'
+def compile_fr_result_csv():
+    master_sheet_name = CSV_PRENAME + '_AMsound_firing_rate.csv'
 
-    for master_sheet_name in [master_sheet_name_trialfr, master_sheet_name_spoutfr]:
-        process_files = glob(OUTPUT_PATH + sep + '*_' + master_sheet_name)
+    process_files = glob(OUTPUT_PATH + sep + '*_tempfile_' + master_sheet_name)
 
-        # Read first process csv just to get the header
-        df_header = pd.read_csv(process_files[0], nrows=0)
+    # Read first process csv just to get the header
+    df_header = pd.read_csv(process_files[0], nrows=0)
 
-        # Now read all process csv to compile
-        df_merged = (read_csv(f, sep=',', header=None, skiprows=1) for f in process_files)
-        df_merged = pd.concat(df_merged, ignore_index=True)
+    # Now read all process csv to compile
+    df_merged = (read_csv(f, sep=',', header=None, skiprows=1) for f in process_files)
+    df_merged = pd.concat(df_merged, ignore_index=True)
 
-        df_header.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='w', header=True, index=False)
-        df_merged.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='a', header=False, index=False)
+    df_header.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='w', header=True, index=False)
+    df_merged.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='a', header=False, index=False)
 
-        [remove(f) for f in process_files]
+    [remove(f) for f in process_files]
+
+def compile_spout_result_csv():
+    master_sheet_name = CSV_PRENAME + '_allSpoutOnsetOffset_firing_rate.csv'
+
+    process_files = glob(OUTPUT_PATH + sep + '*_' + master_sheet_name)
+
+    # Read first process csv just to get the header
+    df_header = pd.read_csv(process_files[0], nrows=0)
+
+    # Now read all process csv to compile
+    df_merged = (read_csv(f, sep=',', header=None, skiprows=1) for f in process_files)
+    df_merged = pd.concat(df_merged, ignore_index=True)
+
+    df_header.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='w', header=True, index=False)
+    df_merged.to_csv(OUTPUT_PATH + sep + master_sheet_name, mode='a', header=False, index=False)
+
+    [remove(f) for f in process_files]
+
 
 """
 Set global paths and variables
@@ -286,7 +321,7 @@ BASELINE_DURATION_FOR_FR = 1  # in seconds; for firing rate calculation to non-A
 STIM_DURATION_FOR_FR = 1  # in seconds; for firing rate calculation to AM trials
 PRETRIAL_DURATION_FOR_SPIKETIMES = 2  # in seconds; for grabbing spiketimes around AM trials
 POSTTRIAL_DURATION_FOR_SPIKETIMES = 5  # in seconds; for grabbing spiketimes around AM trials
-NUMBER_OF_CORES = int(cpu_count()/2)
+NUMBER_OF_CORES = cpu_count() // 2
 # NUMBER_OF_CORES = 1
 # Only run these cells/su or None to run all
 CELLS_TO_RUN = None
@@ -300,12 +335,16 @@ RECORDING_TYPE_DICT = {
     'SUBJ-ID-232': 'intan',
 }
 
-CSV_PRENAME = 'OFCRec'  # for firing rate calculations
+CSV_PRENAME = 'OFCPL'  # for firing rate calculations
 makedirs(OUTPUT_PATH + sep + 'JSON files', exist_ok=True)
 
 if __name__ == '__main__':
     # Load existing JSONs; will be empty if this is the first time running
     all_json = glob(OUTPUT_PATH + sep + 'JSON files' + sep + '*json')
+
+    # Clear temp files if they exist
+    process_tempfiles = glob(OUTPUT_PATH + sep + '*_tempfile_*.csv')
+    [remove(f) for f in process_tempfiles]
 
     # Generate a list of inputs to be passed to each worker
     input_lists = list()
@@ -325,17 +364,18 @@ if __name__ == '__main__':
                 continue
 
         # run_pipeline((memory_path, all_json))
-        #
+
         input_lists.append((memory_path, all_json))
 
     pool = Pool(NUMBER_OF_CORES)
 
-    # Feed each worker with all memory paths from one unit
+    # # Feed each worker with all memory paths from one unit
     pool_map_result = pool.map(run_pipeline, input_lists)
 
     pool.close()
 
-    # if pool_map_result.ready():
+
     pool.join()
 
-    compile_result_csv()
+    compile_fr_result_csv()
+    # compile_spout_result_csv()

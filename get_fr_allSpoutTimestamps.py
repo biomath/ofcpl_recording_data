@@ -1,6 +1,6 @@
-from intrastim_correlation import *
-from pandas import read_csv
 from os.path import sep
+from pandas import read_csv
+from intrastim_correlation import *
 
 def get_fr_allSpoutTimestamps(memory_name,
                               key_path_spout,
@@ -34,6 +34,11 @@ def get_fr_allSpoutTimestamps(memory_name,
     for _, cur_timestamp in spout_key_times.iterrows():
         offset_timestamp = cur_timestamp['Spout_offset'] + breakpoint_offset_time
         onset_timestamp = cur_timestamp['Spout_onset'] + breakpoint_offset_time
+
+        # Skip brief spout events; <2 s offset - onset;
+        if offset_timestamp - onset_timestamp < 2:
+            continue
+
         # Get spike times around the current spout offset
         offset_baseline_spikes = spike_times[((offset_timestamp - baseline_duration_for_fr_s) < spike_times) &
                                       (spike_times < offset_timestamp)]
