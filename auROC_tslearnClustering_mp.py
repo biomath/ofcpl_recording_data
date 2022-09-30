@@ -70,7 +70,7 @@ def mp_randomTSKMeans(mp_input_list):
         np.savetxt(f, boot_k_gap_array.reshape(1, boot_k_gap_array.shape[0]), fmt='%d,%d,%.5f', newline='\n')
 
 
-def optimalK(data, maxClusters=10, boot_n=10, sk_factor=1):
+def optimalK(data, maxClusters=10, boot_n=10, sk_factor=1, multiProcess=True):
     """
     This function calculates the optimal number of clusters from time series
     It is optimal for time series because it uses dynamic time warping (DTW) as a distance metric
@@ -107,28 +107,6 @@ def optimalK(data, maxClusters=10, boot_n=10, sk_factor=1):
         km.fit(data)
         data_inertia_list[dummy_idx] = km.inertia_
         toc(tk)
-    # mp_input_list = list(
-    #     zip(
-    #         k_range,
-    #         np.tile(data, [len(k_range), 1, 1])
-    #     )
-    # )
-    # pool = Pool(NUMBER_OF_CORES)
-    # # Feed each worker with all memory paths from one unit
-    # pool_map_result = pool.map(mp_TSKMeans, mp_input_list)
-    # pool.close()
-    # pool.join()
-
-    # Open all processes temp files and append them
-    # tmp_file_names = glob(OUTPUT_FOLDER + sep + '*_randomTSK_tsClustering.npy')
-    # k_inertia_array = np.empty((0, 2))
-    # for tmp_file_name in tmp_file_names:
-    #     cur_ki_array = np.load(tmp_file_name)
-    #     np.append(k_inertia_array, cur_ki_array, axis=0)
-    #
-
-    # for dummy_ix, k in k_range:
-    #     data_inertia_list[dummy_ix] = [ki[1] for ki in k_inertia_array if ki[0] == k]
 
     boot_k_combinations = np.array(np.meshgrid(range(0, boot_n), k_range)).T.reshape(-1, 2)
 
@@ -149,11 +127,15 @@ def optimalK(data, maxClusters=10, boot_n=10, sk_factor=1):
           (NUMBER_OF_CORES, boot_n, maxClusters, boot_n * maxClusters))
 
     tk = tic()
-    pool = Pool(NUMBER_OF_CORES)
-    # Feed each worker with all memory paths from one unit
-    pool_map_result = pool.map(mp_randomTSKMeans, mp_input_list)
-    pool.close()
-    pool.join()
+    if multiProcess:
+        pool = Pool(NUMBER_OF_CORES)
+        # Feed each worker with all memory paths from one unit
+        pool_map_result = pool.map(mp_randomTSKMeans, mp_input_list)
+        pool.close()
+        pool.join()
+    else:
+        for mp_input in mp_input_list:
+            mp_randomTSKMeans(mp_input)
 
     toc(tk)
 
@@ -219,26 +201,43 @@ INPUT_FOLDER = '.' + sep + sep.join(['Data', 'Output', 'JSON files'])
 all_json = glob(INPUT_FOLDER + sep + '*json')
 
 # These are the clustering periods in relation to the event; in seconds
-CLUSTERING_TIME_START = -0.5
-CLUSTERING_TIME_END = 1.5
-NUMBER_OF_CORES = cpu_count() // 2
+
+NUMBER_OF_CORES = 4 * cpu_count() // 5
+# NUMBER_OF_CORES = 1
+MULTIPROCESS = True
+
 # optimalK clustering and gap-stat parameters
 # Processing time estimate is ~number_of_series * MAXCLUSTERS * BOOT_N * T
 # T is ~0.008 s in the CarasLab data analysis computer
 MAXCLUSTERS = 10
 BOOT_N = 50
-SK_FACTOR = 3
+SK_FACTOR = 4
 
 # Sessions you want to cluster; keep in mind passive sessions do not contain true trial outcomes or spout events and
 # should only be clustered using all AMTrials or by AMdepth
 which_session = ['active']  # pre, active, post, post1h
 
 # Events you want to cluster
-# col_name = ['Hit_auroc', 'Miss_auroc', 'FA_auroc', 'AMTrial_auroc',  # Trial stuff
-#             'SpoutOff_hits_auroc', 'allSpoutOnset_auroc', 'allSpoutOffset_auroc']  # Spout stuff
-# col_name = ['AMdepth_Hit_0.25_auroc', 'AMdepth_Hit_0.35_auroc', 'AMdepth_Miss_0.25_auroc', 'AMdepth_Miss_0.35_auroc']
-# col_name = ['Miss_shockOn_auroc']
-col_name = ['allSpoutOnset_auroc']
+
+# Trial stuff
+# CLUSTERING_TIME_START = 0
+# CLUSTERING_TIME_END = 2
+# col_name = ['Hit_auroc', 'FA_auroc']  # 'SpoutOff_hits_auroc']
+
+CLUSTERING_TIME_START = 0
+CLUSTERING_TIME_END = 1
+col_name = ['SpoutOff_hits_auroc']
+
+# Spout stuff
+# CLUSTERING_TIME_START = 0
+# CLUSTERING_TIME_END = 1
+# col_name = ['allSpoutOnset_auroc', 'allSpoutOffset_auroc']
+
+# Misses
+# CLUSTERING_TIME_START = 1.3
+# CLUSTERING_TIME_END = 2.25
+# col_name = ['Miss_shockOn_auroc', 'Miss_shockOff_auroc']
+
 
 for session in which_session:
     for cur_col in col_name:
@@ -286,7 +285,10 @@ for session in which_session:
 
             cur_data = cur_dict['Session'][session_name]
 
-            response_curve = np.array(cur_data[cur_col])
+            try:
+                response_curve = np.array(cur_data[cur_col])
+            except KeyError:
+                print()
 
             # Exclude units without responses (no FA trials for example)
             if len(response_curve) == 0:
@@ -327,7 +329,7 @@ for session in which_session:
         relevant_snippet = np.array([cur_auroc[[int(idx) for idx in relevant_indices]] for cur_auroc in plot_list])
 
         k, (gapStat_means, gapStat_sks) = optimalK(relevant_snippet, maxClusters=MAXCLUSTERS, boot_n=BOOT_N,
-                                                   sk_factor=SK_FACTOR)
+                                                   sk_factor=SK_FACTOR, multiProcess=MULTIPROCESS)
         gapstat_df = pd.DataFrame(
             {"Cluster_n": np.arange(1, MAXCLUSTERS + 1), "Gap_mean": gapStat_means, "Gap_sks": gapStat_sks})
         # Save gap-stat data
@@ -367,9 +369,26 @@ for session in which_session:
         with PdfPages(sep.join([OUTPUT_FOLDER, cur_col + '_' + session + '_HClustering.pdf'])) as pdf:
             plt.figure()
 
+            # Reorder input using index of max(abs(auROC))
+            plot_list = np.array(auroc_list)
+            sorted_plot_list = list()
+            sorted_indices = list()
+            for cluster_id in sorted(list(set(clusters))):
+                cur_indices = cluster_df[cluster_df['Cluster_id'] == cluster_id].index.tolist()
+                sorted_indices.extend(cur_indices)
+                cur_resps = plot_list[cur_indices]
+                cur_abs = np.abs(relevant_snippet[cur_indices])
+                idx_sort = np.argsort([np.argmax(x) for x in cur_abs])
+                sorted_plot_list.extend(cur_resps[idx_sort])
+
+            # abs_values = np.abs(relevant_snippet)
+            # idx_max = [np.argmax(x) for x in abs_values]
+            # idx_sort = np.lexsort((np.argsort(idx_max), cluster_df.index.tolist(),))
+            # plot_list = plot_list[idx_sort]
+
             # Plot with seaborn
-            g = sns.clustermap(plot_list[cluster_df.index.tolist()], row_cluster=False, col_cluster=False,
-                               row_colors=row_colors[cluster_df.index.tolist()].to_numpy())
+            g = sns.clustermap(sorted_plot_list, row_cluster=False, col_cluster=False,
+                               row_colors=row_colors[sorted_indices].to_numpy())
             g.ax_heatmap.set_xticklabels([np.round(float(a.get_text()) * BINSIZE - PRETRIAL_DURATION_FOR_SPIKETIMES, 1)
                                           for a in g.ax_heatmap.get_xticklabels()], size='xx-small')
             g.ax_heatmap.set_xlabel('Time relative to event (s)')

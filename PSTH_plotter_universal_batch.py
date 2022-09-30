@@ -1,5 +1,5 @@
-from intrastim_correlation import *
-import matplotlib as mpl
+from Trash.intrastim_correlation import *
+from matplotlib import rcParams
 from pandas import read_csv, DataFrame
 from os import makedirs
 from os.path import sep
@@ -764,6 +764,202 @@ def plot_psth_AMdepth_HitVsMiss(memory_paths,
 
 
 
+
+def plot_psth_AMdepth_TrialType(memory_paths,
+                                all_key_path,
+                                pre_stimulus_raster, post_stimulus_raster,
+                                recording_type,  # synapse or intan
+                                hist_bin_size_ms=10,
+                                pre_stimulus_baseline=0.5,
+                                cur_breakpoint_df=None,
+                                uniform_psth_y_lim=True,
+                                psth_ylim=None,
+                                raster_max_y_lim=30.5):
+    split_memory_path = split(REGEX_SEP, memory_paths[0])  # split path
+    unit_id = split_memory_path[-1][:-4]  # Example unit id: SUBJ-ID-26_SUBJ-ID-26_200711_concat_cluster41
+    split_timestamps_name = split("_*_", unit_id)  # split timestamps
+    cur_date = split_timestamps_name[1]
+    subject_id = split_timestamps_name[0]
+
+    output_name = unit_id + "_PSTH_10ms"
+
+    output_subfolder = sep.join([OUTPUT_PATH, subject_id, cur_date, "Trial type"])
+    makedirs(output_subfolder, exist_ok=True)
+
+    # Use subj-session date to grab appropriate keys
+    key_paths = glob(all_key_path + sep + subject_id + '*' +
+                     cur_date + "*_trialInfo.csv")
+
+    if len(key_paths) == 0:
+        # Maybe the key file wasn't found because date is in Intan format
+        # Convert date to ePsych format
+        cur_date = datetime.strptime(cur_date, '%y%m%d')
+        cur_date = datetime.strftime(cur_date, '%y-%m-%d')
+        key_paths = glob(all_key_path + sep + subject_id + '*' +
+                         cur_date + "*_trialInfo.csv")
+
+    # make sure they're ordered by session time
+    split_key_paths = [split("_*_", key_path) for key_path in key_paths]
+    session_times = [split("-*-", split_path[1])[-1] for split_path in split_key_paths]
+    key_paths = [key_path for _, key_path in sorted(zip(session_times, key_paths), key=lambda pair: pair[0])]
+
+    output_name_pdf = output_subfolder + sep + output_name + '_TrialType.pdf'
+
+    # Load spike times
+    spike_times = np.genfromtxt(memory_paths[0])
+
+    # Get max y lim for PSTHs across conditions (e.g. Pre, Active, Post) for the current unit
+    psth_max_ylim = None
+    if uniform_psth_y_lim:
+        psth_max_ylim = 0
+        for key_idx, key_path in enumerate(key_paths):
+            # skip Passive
+            if "Aversive" not in key_path and "Active" not in key_path:  # skip passive stuff
+                continue
+
+            temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
+            if recording_type == 'synapse':
+                temp_session = temp_session[1]
+            elif recording_type == 'intan':
+                temp_session = "_".join(temp_session[1:4])
+            else:
+                print('Recording type not specified. Skipping;...')
+                return
+            breakpoint_offset_idx = cur_breakpoint_df.index[
+                cur_breakpoint_df['Session_file'].str.contains(temp_session)]
+            try:
+                breakpoint_offset = cur_breakpoint_df.loc[
+                    breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
+            except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
+                try:
+                    breakpoint_offset = cur_breakpoint_df.loc[
+                        breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
+                except KeyError:
+                    breakpoint_offset = 0  # first file; no breakpoint offset needed
+                if recording_type == 'synapse':
+                    breakpoint_offset = breakpoint_offset / 24414.0625
+                elif recording_type == 'intan':
+                    breakpoint_offset = breakpoint_offset / 30000
+                else:
+                    print('Recording type not specified. Skipping;...')
+                    return
+
+            # Load key file
+            key_times = read_csv(key_path)
+
+            for trial_type in ['Hit', 'False alarm', 'Miss (shock)', 'Miss (no shock)']:
+
+                if trial_type == 'Hit':
+                    cur_key_times = key_times[key_times['Hit'] == 1]['Trial_onset']
+                elif trial_type == 'False alarm':
+                    cur_key_times = key_times[key_times['FA'] == 1]['Trial_onset']
+                elif trial_type == 'Miss (shock)':
+                    cur_key_times = key_times[(key_times['Miss'] == 1) & (key_times['ShockFlag'] == 1)]['Trial_onset']
+                else:
+                    cur_key_times = key_times[(key_times['Miss'] == 1) & (key_times['ShockFlag'] == 0)]['Trial_onset']
+
+                ## do something really inefficient here to hold y_axis uniform across all stimuli and treatments
+                hist, _ = common_psth_engine(spike_times,
+                                             cur_key_times,
+                                             pre_stimulus_raster, post_stimulus_raster,
+                                             breakpoint_offset=breakpoint_offset,
+                                             hist_bin_size_ms=hist_bin_size_ms,
+                                             do_plot=False)
+                if np.max(hist) > psth_max_ylim:
+                    psth_max_ylim = np.max(hist)
+
+    with PdfPages(output_name_pdf) as pdf:
+        for key_idx, key_path in enumerate(key_paths):
+            # skip Passive
+            if "Aversive" not in key_path and "Active" not in key_path:  # skip passive stuff
+                continue
+            temp_session = split("_*_", split(REGEX_SEP, key_path)[-1])
+            if recording_type == 'synapse':
+                temp_session = temp_session[1]
+            elif recording_type == 'intan':
+                temp_session = "_".join(temp_session[1:4])
+            else:
+                print('Recording type not specified. Skipping;...')
+                return
+            breakpoint_offset_idx = cur_breakpoint_df.index[
+                cur_breakpoint_df['Session_file'].str.contains(temp_session)]
+            try:
+                breakpoint_offset = cur_breakpoint_df.loc[
+                    breakpoint_offset_idx - 1, 'Break_point_seconds'].values[0]  # grab previous session's breakpoint
+            except KeyError:  # Older recordings do not have Break_point_seconds but Break_point. Need to divide by sampling rate
+                try:
+                    breakpoint_offset = cur_breakpoint_df.loc[
+                        breakpoint_offset_idx - 1, 'Break_point'].values[0]  # grab previous session's breakpoint
+                except KeyError:
+                    breakpoint_offset = 0  # first file; no breakpoint offset needed
+                if recording_type == 'synapse':
+                    breakpoint_offset = breakpoint_offset / 24414.0625
+                elif recording_type == 'intan':
+                    breakpoint_offset = breakpoint_offset / 30000
+                else:
+                    print('Recording type not specified. Skipping;...')
+                    return
+
+            # Load key file
+            key_times = read_csv(key_path)
+
+            for trial_type in ['Hit', 'False alarm', 'Miss (shock)', 'Miss (no shock)']:
+                if trial_type == 'Hit':
+                    cur_key_times = key_times[key_times['Hit'] == 1]['Trial_onset']
+                elif trial_type == 'False alarm':
+                    cur_key_times = key_times[key_times['FA'] == 1]['Trial_onset']
+                elif trial_type == 'Miss (shock)':
+                    cur_key_times = key_times[(key_times['Miss'] == 1) & (key_times['ShockFlag'] == 1)]['Trial_onset']
+                else:
+                    cur_key_times = key_times[(key_times['Miss'] == 1) & (key_times['ShockFlag'] == 0)]['Trial_onset']
+
+
+
+                # Set up figure and axs
+                plt.clf()
+                f = plt.figure()
+                ax_psth = f.add_subplot(212)
+                ax_raster = f.add_subplot(211, sharex=ax_psth)
+
+                # Populate axs
+                common_psth_engine(spike_times=spike_times,
+                                   key_times=cur_key_times,
+                                   pre_stimulus_raster=pre_stimulus_raster,
+                                   post_stimulus_raster=post_stimulus_raster,
+                                   pre_stimulus_baseline=pre_stimulus_baseline,
+                                   ax_psth=ax_psth, ax_raster=ax_raster,
+                                   hist_bin_size_ms=10,
+                                   breakpoint_offset=breakpoint_offset,
+                                   do_plot=True)
+
+                # Format axs
+                format_ax(ax_raster)
+                format_ax(ax_psth)
+
+                ax_raster.axis('off')
+
+                if psth_ylim is None:
+                    ax_psth.set_ylim([0, psth_max_ylim])
+                else:
+                    ax_psth.set_ylim([0, psth_ylim])
+                ax_raster.set_ylim([-0.5, raster_max_y_lim])
+                ax_psth.set_ylabel("Spike rate by trial (Hz)")
+                ax_psth.set_xlabel("Time (s)")
+
+                f.suptitle("_".join(split("_*_", split(REGEX_SEP, key_path)[-1][:-4])[0:2]) +
+                           "_" + split("_*_", split(REGEX_SEP, memory_paths[0])[-1][:-4])[-1] + ":\n" +
+                           trial_type)
+
+                pdf.savefig()
+
+                # f.savefig(output_path + sep + "_".join(split("_*_", split(REGEX_SEP, key_name)[-1][:-4])[0:2]) +
+                #           "_" + split("_*_", split(REGEX_SEP, memory_name)[-1][:-4])[-1] +
+                #           "_" + str(round(stim, 2)) + '.eps', format='eps', dpi=600)
+
+                plt.close()
+
+
+
 def run_multiprocessing_plot(input_list, output_type='pdf'):
     memory_paths, pre_stimulus_raster, post_stimulus_raster, \
     wav_files_path, output_path, breakpoint_file_path, recording_type_dict = input_list
@@ -795,8 +991,8 @@ def run_multiprocessing_plot(input_list, output_type='pdf'):
     # Plot spout-offset PSTH
     # '''
     # # if capping trials at 500
-    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
-    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
+    # rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
+    # rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
     # plot_psth_spoutOffset(memory_paths,
     #                       KEYS_PATH,
     #                       pre_stimulus_raster, post_stimulus_raster,
@@ -811,8 +1007,8 @@ def run_multiprocessing_plot(input_list, output_type='pdf'):
     # Plot spout-onset PSTH
     # '''
     # # if capping trials at 500
-    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
-    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
+    # rcParams['lines.markersize'] = LABEL_FONT_SIZE / 50.
+    # rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 50.
     # plot_psth_spoutOnset(memory_paths,
     #                      KEYS_PATH,
     #                      pre_stimulus_raster, post_stimulus_raster,
@@ -826,26 +1022,26 @@ def run_multiprocessing_plot(input_list, output_type='pdf'):
     '''
     Plot AM-depth PSTH
     '''
-    # if capping raster trials at 100
-    mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 8.
-    mpl.rcParams['lines.markeredgewidth'] = mpl.rcParams['lines.markersize'] / 2
-    plot_psth_AMdepth(memory_paths,
-                      KEYS_PATH,
-                      pre_stimulus_raster, post_stimulus_raster,
-                      recording_type,
-                      gaussian_window=gaussian_window,
-                      hist_bin_size_ms=10,
-                      cur_breakpoint_df=cur_breakpoint_df,
-                      uniform_psth_y_lim=True,
-                      raster_max_y_lim=100.5,
-                      override_max_ylim=50.5)
+    # # if capping raster trials at 100
+    # rcParams['lines.markersize'] = LABEL_FONT_SIZE / 8.
+    # rcParams['lines.markeredgewidth'] = rcParams['lines.markersize'] / 2
+    # plot_psth_AMdepth(memory_paths,
+    #                   KEYS_PATH,
+    #                   pre_stimulus_raster, post_stimulus_raster,
+    #                   recording_type,
+    #                   gaussian_window=gaussian_window,
+    #                   hist_bin_size_ms=10,
+    #                   cur_breakpoint_df=cur_breakpoint_df,
+    #                   uniform_psth_y_lim=True,
+    #                   raster_max_y_lim=100.5,
+    #                   override_max_ylim=50.5)
 
     # '''
     # Plot AM-depth PSTH by trial response (Hit vs Miss)
     # '''
     # # if capping trials at 30
-    # mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
-    # mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
+    # rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
+    # rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
     # plot_psth_AMdepth_HitVsMiss(memory_paths,
     #                             KEYS_PATH,
     #                             pre_stimulus_raster, post_stimulus_raster,
@@ -855,6 +1051,21 @@ def run_multiprocessing_plot(input_list, output_type='pdf'):
     #                             uniform_psth_y_lim=True,
     #                             raster_max_y_lim=30.5)
 
+    '''
+    Plot PSTH by trial response (Hit vs Miss (shock) vs Miss (no sho))
+    '''
+    # if capping trials at 30
+    rcParams['lines.markersize'] = LABEL_FONT_SIZE / 2.
+    rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 10.
+    plot_psth_AMdepth_TrialType(memory_paths,
+                                KEYS_PATH,
+                                pre_stimulus_raster, post_stimulus_raster,
+                                recording_type,
+                                hist_bin_size_ms=10,
+                                cur_breakpoint_df=cur_breakpoint_df,
+                                uniform_psth_y_lim=False,
+                                psth_ylim=60,  # override y lim for representative PSTHs
+                                raster_max_y_lim=30.5)
 
 """
 Set global paths and variables
@@ -863,7 +1074,7 @@ warnings.filterwarnings("ignore")
 
 SPIKES_PATH = '.' + sep + sep.join(['Data', 'Spike times'])
 KEYS_PATH = '.' + sep + sep.join(['Data', 'Key files'])
-OUTPUT_PATH = '.' + sep + sep.join(['Data', 'Output', 'PSTHs new'])
+OUTPUT_PATH = '.' + sep + sep.join(['Data', 'Output', 'PSTHs'])
 BREAKPOINT_PATH = '.' + sep + sep.join(['Data', 'Breakpoints'])
 OUTPUT_TYPE = 'pdf'
 
@@ -877,9 +1088,9 @@ WAV_FILES_PATH = r'./Data/Stimuli'  # TODO: design AM stimuli .wav
 # CELLS_TO_RUN = ['SUBJ-ID-154_210511_concat_cluster1267',
 #                 'SUBJ-ID-151_210510_concat_cluster1466',
 #                 'SUBJ-ID-231_210710_concat_cluster572']
-CELLS_TO_RUN = None
+CELLS_TO_RUN = ['SUBJ-ID-154_210501_concat_cluster2628', 'SUBJ-ID-154_210511_concat_cluster1594']
 
-SUBJECTS_TO_RUN = None
+SUBJECTS_TO_RUN = ['SUBJ-ID-154']
 
 RECORDING_TYPE_DICT = {
     'SUBJ-ID-197': 'synapse',
@@ -887,29 +1098,40 @@ RECORDING_TYPE_DICT = {
     'SUBJ-ID-154': 'synapse',
     'SUBJ-ID-231': 'intan',
     'SUBJ-ID-232': 'intan',
+    'SUBJ-ID-270': 'intan',
+    'SUBJ-ID-389': 'intan',
+    'SUBJ-ID-390': 'intan'
 }
 
-PRE_STIMULUS_RASTER = 0
-POST_STIMULUS_RASTER = 1.
+PRE_STIMULUS_RASTER = 1
+POST_STIMULUS_RASTER = 5
 NUMBER_OF_CORES = 4
 
 # Set plotting parameters
-LABEL_FONT_SIZE = 15
-TICK_LABEL_SIZE = 10
-mpl.rcParams['figure.figsize'] = (12, 10)
-mpl.rcParams['figure.dpi'] = 300
-mpl.rcParams['font.size'] = LABEL_FONT_SIZE * 1.5
-mpl.rcParams['axes.labelsize'] = LABEL_FONT_SIZE * 1.5
-mpl.rcParams['axes.titlesize'] = LABEL_FONT_SIZE
-mpl.rcParams['axes.linewidth'] = LABEL_FONT_SIZE / 12.
-mpl.rcParams['legend.fontsize'] = LABEL_FONT_SIZE / 2.
-mpl.rcParams['xtick.labelsize'] = TICK_LABEL_SIZE * 1.5
-mpl.rcParams['ytick.labelsize'] = TICK_LABEL_SIZE * 1.5
-mpl.rcParams['errorbar.capsize'] = LABEL_FONT_SIZE
-mpl.rcParams['lines.markersize'] = LABEL_FONT_SIZE / 30.
-mpl.rcParams['lines.markeredgewidth'] = LABEL_FONT_SIZE / 30.
-mpl.rcParams['lines.linewidth'] = LABEL_FONT_SIZE / 8.
+LABEL_FONT_SIZE = 23
+tick_label_size = 15
+legend_font_size = 15
+line_thickness = 2
 
+rcParams['figure.dpi'] = 600
+rcParams['pdf.fonttype'] = 42
+rcParams['ps.fonttype'] = 42
+rcParams['font.family'] = 'Arial'
+
+rcParams['font.size'] = LABEL_FONT_SIZE
+rcParams['axes.labelsize'] = LABEL_FONT_SIZE
+rcParams['axes.titlesize'] = LABEL_FONT_SIZE
+rcParams['axes.linewidth'] = line_thickness
+rcParams['legend.fontsize'] = legend_font_size
+rcParams['xtick.labelsize'] = tick_label_size
+rcParams['ytick.labelsize'] = tick_label_size
+rcParams['errorbar.capsize'] = LABEL_FONT_SIZE / 2
+rcParams['lines.markersize'] = line_thickness / 2
+rcParams['lines.linewidth'] = line_thickness / 2
+
+rcParams['figure.figsize'] = (7, 7)
+
+DEBUG_MODE = False
 if __name__ == '__main__':
     # Generate a list of inputs to be passed to each worker
     input_lists = list()
@@ -935,13 +1157,18 @@ if __name__ == '__main__':
             else:
                 continue
 
-        input_lists.append(([unit_path], PRE_STIMULUS_RASTER, POST_STIMULUS_RASTER, WAV_FILES_PATH,
+        if not DEBUG_MODE:
+            input_lists.append(([unit_path], PRE_STIMULUS_RASTER, POST_STIMULUS_RASTER, WAV_FILES_PATH,
+                            OUTPUT_PATH, BREAKPOINT_PATH, RECORDING_TYPE_DICT))
+        else:
+            run_multiprocessing_plot(([unit_path], PRE_STIMULUS_RASTER, POST_STIMULUS_RASTER, WAV_FILES_PATH,
                             OUTPUT_PATH, BREAKPOINT_PATH, RECORDING_TYPE_DICT))
 
-    pool = mp.Pool(NUMBER_OF_CORES)
+    if not DEBUG_MODE:
+        pool = mp.Pool(NUMBER_OF_CORES)
 
-    # Feed each worker with all memory paths from one unit
-    pool.map(run_multiprocessing_plot, input_lists)
+        # Feed each worker with all memory paths from one unit
+        pool.map(run_multiprocessing_plot, input_lists)
 
-    pool.close()
-    pool.join()
+        pool.close()
+        pool.join()

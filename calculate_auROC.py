@@ -117,7 +117,11 @@ def calculate_auROC_spoutOffHit(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'Hit', 'SpoutOff_times_during_trial']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC SpoutOffHits failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
 
     # Grab spikes around hits
     trial_spikes = cur_df[cur_df['Hit'] == 1]['Trial_spikes']
@@ -133,20 +137,29 @@ def calculate_auROC_spoutOffHit(cur_unitData,
     spoutOffset_triggers = [np.array(t) for t in spoutOffset_triggers]
 
     # If no triggers, skip
+    # try:
+    if len(spoutOffset_triggers[0]) == 0:
+        cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = []
+        cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = []
+        return cur_unitData
+    # except TypeError:
+    #     print()
     try:
-        if len(spoutOffset_triggers[0]) == 0:
-            cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = []
-            cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = []
-            return cur_unitData
-    except TypeError:
-        print()
-    spoutOffset_triggers = [cur_trial[(cur_trial > 0) & (cur_trial < 1)][-1] for cur_trial in spoutOffset_triggers]
+        spoutOffset_triggers = [cur_trial[(cur_trial > 0) & (cur_trial < 1)][-1] for cur_trial in spoutOffset_triggers]
+    except IndexError:
+        print('Spout triggering hit not found; possible timestamp alignment issue. Problem file: ' + session_name)
 
+        cur_unitData["Session"][session_name]['SpoutOff_hits_psth'] = []
+        cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = []
+        return cur_unitData
 
     # Zero-center spikes around those events
     zero_centered_spikes = deepcopy(np.array(trial_spikes.values))
     for trial_idx, spoutOffset_trigger in enumerate(spoutOffset_triggers):
+        # try:
         zero_centered_spikes[trial_idx] -= spoutOffset_trigger
+        # except ValueError:
+        #     print()
 
     # Flatten all trials into a 1D array
     # zero_centered_spikes = np.concatenate(trial_spikes.values.ravel())
@@ -167,6 +180,7 @@ def calculate_auROC_spoutOffHit(cur_unitData,
     cur_unitData["Session"][session_name]['SpoutOff_hits_auroc'] = auroc_curve
 
     return cur_unitData
+
 
 def calculate_auROC_hit(cur_unitData,
                                 session_name,
@@ -220,7 +234,12 @@ def calculate_auROC_hit(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'Hit']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC Hit failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around misses
     trial_spikes = cur_df[cur_df['Hit'] == 1]['Trial_spikes']
@@ -302,7 +321,12 @@ def calculate_auROC_missAllTrials(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'Miss']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC missAllTrials failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around trials
     trial_spikes = cur_df[cur_df['Miss'] == 1]['Trial_spikes']
@@ -385,7 +409,12 @@ def calculate_auROC_missByShock(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'Miss', 'ShockFlag']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC missByShock failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around misses
     shock_labels = ['Off', 'On']  # 0: Off, 1: On
@@ -473,7 +502,12 @@ def calculate_auROC_FA(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Trial_spikes', 'FA']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC FA failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around FAs
     trial_spikes = cur_df[cur_df['FA'] == 1]['Trial_spikes']
@@ -565,6 +599,7 @@ def calculate_auROC_AMTrial(cur_unitData,
 
         # Not sure how this is possible but this one recording ended up with more trials than Trial_spikes entries
         # Eliminate the last to be able to run it. Try to identify the issue if this happens with more recordings
+        copy_relevant_unitData['Trial_spikes'] = copy_relevant_unitData['Trial_spikes'][0:100]
         copy_relevant_unitData['Hit'] = copy_relevant_unitData['Hit'][0:100]
         copy_relevant_unitData['Miss'] = copy_relevant_unitData['Miss'][0:100]
         cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
@@ -653,7 +688,7 @@ def calculate_auROC_AMdepthHitVsMiss(cur_unitData,
     try:
         cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
     except ValueError:
-        print('auROC AMTrial failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        print('auROC AMdepthHitVsMiss failed with ' + cur_unitData['Unit'] + '----' + session_name)
         return cur_unitData
 
     amdepths = np.round(sorted(list(set(copy_relevant_unitData['AMdepth']))), 2)
@@ -700,7 +735,7 @@ def calculate_auROC_AMdepthHitVsMiss(cur_unitData,
     return cur_unitData
 
 
-def calculate_auROC_AMdepthAllTrials(cur_unitData,
+def calculate_auROC_AMdepthByAMdepth(cur_unitData,
                                      session_name,
                                      pre_stimulus_baseline_start,
                                      pre_stimulus_baseline_end,
@@ -757,7 +792,7 @@ def calculate_auROC_AMdepthAllTrials(cur_unitData,
     try:
         cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
     except ValueError:
-        print('auROC AMTrial failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        print('auROC AMdepthByAMdepth failed with ' + cur_unitData['Unit'] + '----' + session_name)
         return cur_unitData
 
     amdepths = np.round(sorted(list(set(copy_relevant_unitData['AMdepth']))), 2)
@@ -815,7 +850,12 @@ def calculate_auROC_allSpoutOnset(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Onset_rasters']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC allSpoutOnset failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around events
     trial_spikes = cur_df['Onset_rasters']
@@ -868,7 +908,12 @@ def calculate_auROC_allSpoutOffset(cur_unitData,
     # Need to create a deep copy here or pandas will change original input (incredibly)
     key_filter = ['Offset_rasters']
     copy_relevant_unitData = {your_key: cur_unitData["Session"][session_name][your_key] for your_key in key_filter}
-    cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    try:
+        cur_df = pd.DataFrame.from_dict(copy_relevant_unitData)
+    except ValueError:
+        print('auROC allSpoutOffset failed with ' + cur_unitData['Unit'] + '----' + session_name)
+        return cur_unitData
+
 
     # Grab spikes around misses
     trial_spikes = cur_df['Offset_rasters']
